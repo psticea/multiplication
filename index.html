@@ -353,127 +353,146 @@ const Sound = (() => {
 })();
 
 /* ============================================================
-   Level generation — guillotine tiling guarantees solvability
+   Level generation
+   Every board carries five numbers:
+     • two of them are bigger than half of the board,
+     • a third one is at least a third of the board,
+     • none of them is a multiple of ten (×10 is too easy),
+     • and the board can always be finished.
+   Numbers may overlap, because a rectangle only has to avoid the
+   numbers that are still on the board. The generator therefore
+   places the numbers in reverse clearing order — which makes a
+   winning order exist by construction — and then verifies it.
    ============================================================ */
 const ROWS = 10;
 
-function splitTiles(cols, wanted){
-  // Start with the whole board and cut it into `wanted` disjoint rectangles.
-  let tiles = [{r:0,c:0,h:ROWS,w:cols}];
-  let guard = 0;
-  while(tiles.length < wanted && guard++ < 400){
-    // prefer splitting the biggest tile that can still be split
-    const candidates = tiles
-      .map((t,i)=>({t,i}))
-      .filter(({t}) => t.w>=2 || t.h>=2)
-      .sort((a,b)=> (b.t.w*b.t.h)-(a.t.w*a.t.h));
-    if(!candidates.length) break;
-    // add a little randomness: choose among the largest few
-    const chosen = candidates[rndInt(0, Math.min(1, candidates.length-1))];
-    const t = chosen.t;
-    const canV = t.w>=2, canH = t.h>=2;
-    const vertical = canV && (!canH || (Math.random() < t.w/(t.w+t.h)));
-    let a,b;
-    if(vertical){
-      const cut = rndInt(1, t.w-1);
-      a = {r:t.r,c:t.c,h:t.h,w:cut};
-      b = {r:t.r,c:t.c+cut,h:t.h,w:t.w-cut};
-    }else{
-      const cut = rndInt(1, t.h-1);
-      a = {r:t.r,c:t.c,h:cut,w:t.w};
-      b = {r:t.r+cut,c:t.c,h:t.h-cut,w:t.w};
-    }
-    tiles.splice(chosen.i,1,a,b);
+function factorPairs(v, cols){
+  const out = [];
+  for(let h=1; h<=ROWS; h++){
+    if(v % h) continue;
+    const w = v/h;
+    if(w>=1 && w<=cols) out.push({h,w});
   }
-  return tiles;
+  return out;
 }
 
-function tileScore(t){
-  // Discourage skinny 1-wide slivers and encourage friendly products.
+// Every rectangle of area `v` that fits the board and has one of its
+// corners on (row,col) — the cell where the number sits.
+function placementsFor(v, row, col, cols){
+  const out = [];
+  for(const {h,w} of factorPairs(v, cols)){
+    const rows = h===1 ? [row] : [row, row-h+1];
+    const colsL = w===1 ? [col] : [col, col-w+1];
+    for(const r of rows) for(const c of colsL){
+      if(r<0 || c<0 || r+h>ROWS || c+w>cols) continue;
+      out.push({r,c,h,w});
+    }
+  }
+  return out;
+}
+
+const rectHolds = (rect,row,col) =>
+  row>=rect.r && row<rect.r+rect.h && col>=rect.c && col<rect.c+rect.w;
+
+// Can this number be cleared while `blockers` are still on the board?
+function canClear(v, row, col, cols, blockers){
+  return placementsFor(v, row, col, cols)
+    .some(rect => !blockers.some(b => rectHolds(rect, b.row, b.col)));
+}
+
+// Exhaustive search over clearing orders — with five numbers this is cheap.
+function isSolvable(board, cols){
+  const n = board.length, full = (1<<n)-1, seen = new Set();
+  const walk = mask => {
+    if(mask===full) return true;
+    if(seen.has(mask)) return false;
+    seen.add(mask);
+    for(let i=0;i<n;i++){
+      if(mask & (1<<i)) continue;
+      const blockers = board.filter((b,j)=> j!==i && !(mask & (1<<j)));
+      if(canClear(board[i].value, board[i].row, board[i].col, cols, blockers) && walk(mask | (1<<i))) return true;
+    }
+    return false;
+  };
+  return walk(0);
+}
+
+// Areas that fit the board, avoid multiples of ten and avoid 1-wide slivers.
+function areaChoices(cols){
+  const set = new Set();
+  for(let h=2; h<=ROWS; h++) for(let w=2; w<=cols; w++){
+    const v = h*w;
+    if(v % 10 !== 0) set.add(v);
+  }
+  return [...set].sort((a,b)=> a-b);
+}
+
+// Values in reverse clearing order: the two giants are cleared last.
+function chooseValues(cols, choose, relaxed){
+  const total = ROWS*cols;
+  const all = areaChoices(cols);
+  if(all.length < 5) return null;
+  if(relaxed) return all.slice(0,5).reverse();
+  const big   = all.filter(v => v*2 >  total);
+  const third = all.filter(v => v*3 >= total && v*2 <= total);
+  const small = all.filter(v => v*3 <  total);
+  const out = [];
+  const take = arr => {
+    const left = arr.filter(v=> !out.includes(v));
+    if(!left.length) return false;
+    out.push(choose(left));
+    return true;
+  };
+  if(!take(big) || !take(big) || !take(third) || !take(small) || !take(small)) return null;
+  return out;
+}
+
+// `values` are placed in reverse clearing order, so each new number only has
+// to stay clearable while every number placed before it is still on the board.
+function buildBoard(cols, choose, relaxed){
+  const values = chooseValues(cols, choose, relaxed);
+  if(!values) return null;
+  const placed = [];
+  for(const v of values){
+    const options = [];
+    for(let row=0; row<ROWS; row++) for(let col=0; col<cols; col++){
+      if(placed.some(p=> p.row===row && p.col===col)) continue;
+      if(canClear(v, row, col, cols, placed)) options.push({value:v, row, col});
+    }
+    if(!options.length) return null;
+    placed.push(choose(options));
+  }
+  return placed;
+}
+
+function boardScore(board){
   let s = 0;
-  if(t.w===1 || t.h===1) s -= 6;
-  if(t.w*t.h < 3) s -= 8;
-  if(t.w>=2 && t.h>=2) s += 4;
-  s += Math.min(t.w,t.h);
+  for(let i=0;i<board.length;i++) for(let j=i+1;j<board.length;j++)
+    s += Math.abs(board[i].row-board[j].row) + Math.abs(board[i].col-board[j].col);
   return s;
 }
 
-function unionRect(a,b){
-  const r = Math.min(a.r,b.r), c = Math.min(a.c,b.c);
-  const r2 = Math.max(a.r+a.h, b.r+b.h), c2 = Math.max(a.c+a.w, b.c+b.w);
-  const u = {r,c,h:r2-r,w:c2-c};
-  return (u.w*u.h === a.w*a.h + b.w*b.h) ? u : null; // only if they perfectly form a rectangle
-}
-
 function makeLevel(cols){
-  let best=null, bestScore=-1e9;
-  // deterministic fallback: five 2×cols bands always tile a 10×cols board
-  const fallback = () => [0,2,4,6,8].map(r=>{
-    const rect = {r, c:0, h:2, w:cols};
-    return makeTarget(rect, cornerInside(rect, rect));
-  });
+  const first = arr => arr[0];
+  let best = null, bestScore = -1;
   for(let attempt=0; attempt<60; attempt++){
-    const tiles = splitTiles(cols, 5);
-    if(tiles.length!==5) continue;
-    let score = tiles.reduce((s,t)=> s+tileScore(t), 0);
-    // Try to create one "nested" pair so the child must clear a small one first.
-    let targets = null;
-    if(Math.random() < 0.75){
-      const pairs = [];
-      for(let i=0;i<tiles.length;i++) for(let j=i+1;j<tiles.length;j++){
-        const u = unionRect(tiles[i], tiles[j]);
-        if(u) pairs.push({i,j,u});
-      }
-      if(pairs.length){
-        const p = pick(pairs);
-        // the larger tile hosts the anchor of the combined rectangle
-        const bigFirst = tiles[p.i].w*tiles[p.i].h >= tiles[p.j].w*tiles[p.j].h;
-        const outer = bigFirst ? tiles[p.i] : tiles[p.j];
-        const inner = bigFirst ? tiles[p.j] : tiles[p.i];
-        // Anchor of the big rectangle must sit in the OUTER tile (not on the inner number)
-        const anchor = cornerInside(p.u, outer);
-        if(anchor){
-          const rest = tiles.filter(t=> t!==outer && t!==inner);
-          targets = [
-            makeTarget(p.u, anchor),
-            makeTarget(inner, cornerInside(inner, inner)),
-            ...rest.map(t=> makeTarget(t, cornerInside(t,t)))
-          ];
-          score += 12; // nested boards are more interesting
-        }
-      }
-    }
-    if(!targets) targets = tiles.map(t=> makeTarget(t, cornerInside(t,t)));
-    // reject boards where two numbers share a cell (cannot happen, but be safe)
-    const seen = new Set();
-    let ok = true;
-    for(const t of targets){ const k=t.row+","+t.col; if(seen.has(k)) ok=false; seen.add(k); }
-    if(!ok) continue;
-    if(score > bestScore){ bestScore = score; best = targets; }
+    const board = buildBoard(cols, pick, false);
+    if(!board || !isSolvable(board, cols)) continue;
+    const s = boardScore(board);
+    if(s > bestScore){ bestScore = s; best = board; }
   }
-  return best || fallback();
-}
-
-function cornerInside(rect, mustBeInside){
-  const corners = [
-    {row:rect.r, col:rect.c},
-    {row:rect.r, col:rect.c+rect.w-1},
-    {row:rect.r+rect.h-1, col:rect.c},
-    {row:rect.r+rect.h-1, col:rect.c+rect.w-1}
-  ].filter(p =>
-    p.row>=mustBeInside.r && p.row < mustBeInside.r+mustBeInside.h &&
-    p.col>=mustBeInside.c && p.col < mustBeInside.c+mustBeInside.w
-  );
-  return corners.length ? pick(corners) : null;
+  // deterministic safety nets, both solvable by construction
+  if(!best) best = buildBoard(cols, first, false);
+  if(!best) best = buildBoard(cols, first, true);
+  return best.map(b => makeTarget(b.value, b.row, b.col));
 }
 
 let TID = 0;
-function makeTarget(rect, anchor){
+function makeTarget(value, row, col){
   return {
     id: ++TID,
-    row: anchor.row, col: anchor.col,
-    value: rect.w*rect.h,
-    w: rect.w, h: rect.h,
+    row, col,
+    value,
     cleared:false,
     born: performance.now(),
     pop: 0,          // squash animation
