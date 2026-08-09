@@ -407,6 +407,11 @@ function unionRect(a,b){
 
 function makeLevel(cols){
   let best=null, bestScore=-1e9;
+  // deterministic fallback: five 2×cols bands always tile a 10×cols board
+  const fallback = () => [0,2,4,6,8].map(r=>{
+    const rect = {r, c:0, h:2, w:cols};
+    return makeTarget(rect, cornerInside(rect, rect));
+  });
   for(let attempt=0; attempt<60; attempt++){
     const tiles = splitTiles(cols, 5);
     if(tiles.length!==5) continue;
@@ -421,11 +426,14 @@ function makeLevel(cols){
       }
       if(pairs.length){
         const p = pick(pairs);
-        const outer = tiles[p.i], inner = tiles[p.j];
+        // the larger tile hosts the anchor of the combined rectangle
+        const bigFirst = tiles[p.i].w*tiles[p.i].h >= tiles[p.j].w*tiles[p.j].h;
+        const outer = bigFirst ? tiles[p.i] : tiles[p.j];
+        const inner = bigFirst ? tiles[p.j] : tiles[p.i];
         // Anchor of the big rectangle must sit in the OUTER tile (not on the inner number)
         const anchor = cornerInside(p.u, outer);
         if(anchor){
-          const rest = tiles.filter((_,k)=> k!==p.i && k!==p.j);
+          const rest = tiles.filter(t=> t!==outer && t!==inner);
           targets = [
             makeTarget(p.u, anchor),
             makeTarget(inner, cornerInside(inner, inner)),
@@ -443,7 +451,7 @@ function makeLevel(cols){
     if(!ok) continue;
     if(score > bestScore){ bestScore = score; best = targets; }
   }
-  return best || makeLevel(cols);
+  return best || fallback();
 }
 
 function cornerInside(rect, mustBeInside){
@@ -870,8 +878,10 @@ function drawEffects(now){
 
   // particles
   G.particles = G.particles.filter(p=>{
-    p.x += p.vx; p.y += p.vy; p.vy += p.g; p.vx *= 0.99; p.rot += p.vr; p.life -= p.decay;
-    if(p.life<=0) return false;
+    if(!G.paused){
+      p.x += p.vx; p.y += p.vy; p.vy += p.g; p.vx *= 0.99; p.rot += p.vr; p.life -= p.decay;
+      if(p.life<=0) return false;
+    }
     ctx.save();
     ctx.globalAlpha = clamp(p.life,0,1);
     ctx.translate(p.x,p.y); ctx.rotate(p.rot);
@@ -883,7 +893,7 @@ function drawEffects(now){
   });
 
   // win confetti
-  if(G.won){
+  if(G.won && !G.paused){
     G.confetti.forEach(cf=>{
       cf.phase += 0.06;
       cf.x += cf.vx + Math.sin(cf.phase)*cf.sway;
