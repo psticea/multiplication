@@ -381,9 +381,9 @@ function factorPairs(v, cols){
 function placementsFor(v, row, col, cols){
   const out = [];
   for(const {h,w} of factorPairs(v, cols)){
-    const rows = h===1 ? [row] : [row, row-h+1];
-    const colsL = w===1 ? [col] : [col, col-w+1];
-    for(const r of rows) for(const c of colsL){
+    const rowStarts = h===1 ? [row] : [row, row-h+1];
+    const colStarts = w===1 ? [col] : [col, col-w+1];
+    for(const r of rowStarts) for(const c of colStarts){
       if(r<0 || c<0 || r+h>ROWS || c+w>cols) continue;
       out.push({r,c,h,w});
     }
@@ -428,12 +428,12 @@ function areaChoices(cols){
 }
 
 // Values in reverse clearing order: the two giants are cleared last.
-function chooseValues(cols, choose, relaxed){
+// The three size groups are disjoint, so the two picks from `big`
+// (and from `small`) are the only ones that need de-duplicating.
+function chooseValues(cols, choose){
   const total = ROWS*cols;
   const all = areaChoices(cols);
-  if(all.length < 5) return null;
-  if(relaxed) return all.slice(0,5).reverse();
-  const big   = all.filter(v => v*2 >  total);
+  const big   = all.filter(v => v*2 >  total);   // more than half the board
   const third = all.filter(v => v*3 >= total && v*2 <= total);
   const small = all.filter(v => v*3 <  total);
   const out = [];
@@ -449,9 +449,8 @@ function chooseValues(cols, choose, relaxed){
 
 // `values` are placed in reverse clearing order, so each new number only has
 // to stay clearable while every number placed before it is still on the board.
-function buildBoard(cols, choose, relaxed){
-  const values = chooseValues(cols, choose, relaxed);
-  if(!values) return null;
+function buildBoard(cols, choose, values){
+  if(!values || values.length!==5) return null;
   const placed = [];
   for(const v of values){
     const options = [];
@@ -476,14 +475,15 @@ function makeLevel(cols){
   const first = arr => arr[0];
   let best = null, bestScore = -1;
   for(let attempt=0; attempt<60; attempt++){
-    const board = buildBoard(cols, pick, false);
-    if(!board || !isSolvable(board, cols)) continue;
+    const board = buildBoard(cols, pick, chooseValues(cols, pick));
+    if(!board || !isSolvable(board, cols)) continue;   // belt and braces
     const s = boardScore(board);
     if(s > bestScore){ bestScore = s; best = board; }
   }
-  // deterministic safety nets, both solvable by construction
-  if(!best) best = buildBoard(cols, first, false);
-  if(!best) best = buildBoard(cols, first, true);
+  // deterministic safety nets, all solvable by construction
+  if(!best) best = buildBoard(cols, first, chooseValues(cols, first));
+  if(!best) best = buildBoard(cols, first, areaChoices(cols).slice(0,5).reverse());
+  if(!best) best = buildBoard(cols, first, [4,4,4,4,4]);
   return best.map(b => makeTarget(b.value, b.row, b.col));
 }
 
